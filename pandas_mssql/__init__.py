@@ -5,6 +5,7 @@ import tempfile
 from functools import wraps
 
 import pyodbc
+import pandas as pd
 from pandas import DataFrame
 from sqlalchemy import create_engine
 
@@ -28,11 +29,10 @@ def monkeypatch_method(cls):
         return func
     return decorator
 
-@monkeypatch_method(DataFrame)
-def read_mssql(self, table, user, password, server, database, params=None):
+def read_mssql(table, user, password, server, database, params=None):
     """Read MSSQL query or database table into a DataFrame."""
     engine = get_engine(user, password, server, database)
-    df = self.read_sql(self, table, engine, params=params)
+    df = pd.read_sql(table, engine, params=params)
     return df
 
 @monkeypatch_method(DataFrame)
