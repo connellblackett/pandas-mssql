@@ -5,7 +5,7 @@ with open("README.md", "r") as fh:
 
 setuptools.setup(
     name="pandas-mssql",
-    version="0.1",
+    version="0.2",
     author="Connell Blackett",
     description= \
         "Pandas DataFrame methods for reading from and writing to SQL Server",
