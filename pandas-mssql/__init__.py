@@ -4,12 +4,12 @@ import subprocess
 import tempfile
 from functools import wraps
 
+import pyodbc
 from pandas import DataFrame
-from pyodbc import drivers
 from sqlalchemy import create_engine
 
 def get_driver():
-    for d in drivers():
+    for d in pyodbc.drivers():
         if 'SQL Server' in d:
             driver = d.replace(' ', '+')
     return driver
@@ -51,40 +51,47 @@ def to_mssql(
         encoding = 'utf_8'
         stdout_encoding = encoding
         code_page = []
+
+    # get an engine with the SQL Server driver
+    engine = get_engine(user, password, server, database)
             
     # get the name of a temporary file we can use to write to for BCP to read
     with tempfile.NamedTemporaryFile(delete=False) as f:
         filename = f.name
 
-    # get an engine with the SQL Server driver
-    engine = get_engine(user, password, server, database)
+    try:
+        # write the data to the temporary file
+        self.to_csv(
+            path_or_buf=filename, 
+            sep=sep, 
+            header=False, 
+            index=index, 
+            encoding=encoding,
+            line_terminator=line_terminator
+            )
 
-    # write the data to the temporary file
-    self.to_csv(
-        path_or_buf=filename, 
-        sep=sep, 
-        header=False, 
-        index=index, 
-        encoding=encoding,
-        line_terminator=line_terminator
-        )
+        # use the pandas to_sql method to write the empty dataframe to the table
+        self[0:0].to_sql(
+            name=table, con=engine, if_exists=if_exists, index=index
+            )
+        
+        # compile the BCP args
+        bcp_cmd = [
+            'bcp', table, 'in', filename,
+            '-S', server, '-d', database, '-U', user,  '-P', password,
+            '-c', '-t',  sep,  '-r', line_terminator
+            ] + code_page
 
-    # use the pandas to_sql method to write the empty dataframe to the table
-    self[0:0].to_sql(
-        name=table, con=engine, if_exists=if_exists, index=index
-        )
-    
-    # compile the BCP args
-    bcp_cmd = [
-        'bcp', table, 'in', filename,
-        '-S', server, '-d', database, '-U', user,  '-P', password,
-        '-c', '-t',  sep,  '-r', line_terminator
-        ] + code_page
+        # run the BCP command and capture the output
+        completed_process = subprocess.run(
+            bcp_cmd, check=True, stdout=subprocess.PIPE
+            )
+            
+    finally:
+        if os.path.exists(filename):
+            os.remove(filename)
 
-    # run the BCP command and capture the output
-    completed_process = subprocess.run(
-        bcp_cmd, check=True, stdout=subprocess.PIPE
-        )
+    # check how many rows have been copied
     stdout = completed_process.stdout.decode(stdout_encoding)
     rows_copied = int(re.search(r'(\d+) rows copied', stdout).group(1))
 
