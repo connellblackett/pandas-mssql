@@ -37,7 +37,7 @@ def read_mssql(table, user, password, server, database, params=None):
 
 @monkeypatch_method(DataFrame)
 def to_mssql(
-        self, table, user, password, server, database, 
+        self, table, user, password, server, database, schema=None,
         if_exists="fail", index=False, line_terminator = '±', sep = '§'
         ):
     """Write records stored in a DataFrame to a MSSQL database using BCP."""
@@ -72,12 +72,17 @@ def to_mssql(
 
         # use the pandas to_sql method to write the empty dataframe to the table
         self[0:0].to_sql(
-            name=table, con=engine, if_exists=if_exists, index=index
+            name=table, 
+            con=engine, 
+            if_exists=if_exists, 
+            index=index, 
+            schema=schema
             )
         
         # compile the BCP args
         bcp_cmd = [
-            'bcp', table, 'in', filename,
+            'bcp', 
+            ('' if schema is None else schema + '.') + table, 'in', filename,
             '-S', server, '-d', database, '-U', user,  '-P', password,
             '-c', '-t',  sep,  '-r', line_terminator
             ] + code_page

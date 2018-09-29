@@ -105,3 +105,4 @@ venv.bak/
 
 # Jupyter Notebooks
 *.ipynb
+tests.py
