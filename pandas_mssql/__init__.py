@@ -9,19 +9,6 @@ import pandas as pd
 from pandas import DataFrame
 from sqlalchemy import create_engine
 
-def get_driver():
-    for d in pyodbc.drivers():
-        if 'SQL Server' in d:
-            driver = d.replace(' ', '+')
-    return driver
-
-def get_engine(user, password, server, database):
-    driver = get_driver()
-    engine = create_engine(
-        f'mssql+pyodbc://{user}:{password}@{server}/{database}?driver={driver}'
-        )
-    return engine
-
 def monkeypatch_method(cls):
     @wraps(cls)
     def decorator(func):
@@ -29,78 +16,83 @@ def monkeypatch_method(cls):
         return func
     return decorator
 
-def read_mssql(table, user, password, server, database, params=None):
-    """Read MSSQL query or database table into a DataFrame."""
-    engine = get_engine(user, password, server, database)
-    df = pd.read_sql(table, engine, params=params)
-    return df
+def get_mssql_driver():
+    for d in pyodbc.drivers():
+        if 'SQL Server' in d:
+            driver = d.replace(' ', '+')
+    return driver
+
+def create_mssql_engine(username, password, host, database):
+    driver = get_mssql_driver()
+    connection_sring = 'mssql+pyodbc://{}:{}@{}/{}?driver={}'.format(
+        username, password, host, database, driver)
+    return create_engine(connection_sring)
 
 @monkeypatch_method(DataFrame)
 def to_mssql(
-        self, table, user, password, server, database, schema=None,
-        if_exists="fail", index=False, line_terminator = '±', sep = '§'
-        ):
-    """Write records stored in a DataFrame to a MSSQL database using BCP."""
+    self, table, engine, schema=None, if_exists="fail", index=False, sep = '§', 
+    line_terminator = '±'):
+    """Write records stored in a DataFrame to an MSSQL database using BCP"""
 
-    # set file and stdout encodings based on platform
+    # under windows utf-8 isnt supported so we're using cp-1252. this has to 
+    # specified in a switch. the stdout will be ascii 
     if os.name == 'nt':
         encoding = 'cp1252'
         stdout_encoding = 'ascii'
         code_page = ['-C', '1252']
+    # under unix the file has to be formatted as utf-8, and no code page 
+    # argument is required. the stdout will also be utf-8
     elif os.name == 'posix':
         encoding = 'utf_8'
         stdout_encoding = encoding
         code_page = []
-
-    # get an engine with the SQL Server driver
-    engine = get_engine(user, password, server, database)
             
-    # get the name of a temporary file we can use to write to for BCP to read
+    # we have to create a temporary file to write to and for bcp to read from
+    # this has to be released without being deleted or bcp will see it as locked 
     with tempfile.NamedTemporaryFile(delete=False) as f:
         filename = f.name
 
     try:
-        # write the data to the temporary file
         self.to_csv(
-            path_or_buf=filename, 
-            sep=sep, 
-            header=False, 
-            index=index, 
-            encoding=encoding,
-            line_terminator=line_terminator
-            )
+            path_or_buf=filename, sep=sep, header=False, index=index, 
+            encoding=encoding, line_terminator=line_terminator)
 
-        # use the pandas to_sql method to write the empty dataframe to the table
+        # we want to trick pandas into creating an empty table with correct
+        # datatypes, by inserting an empty dataframe
         self[0:0].to_sql(
-            name=table, 
-            con=engine, 
-            if_exists=if_exists, 
-            index=index, 
-            schema=schema
-            )
+            name=table, con=engine, if_exists=if_exists, index=index, 
+            schema=schema)
         
-        # compile the BCP args
+        # bcp wont accept a connection string so we extract the attributes from
+        # the engine
         bcp_cmd = [
-            'bcp', 
-            ('' if schema is None else schema + '.') + table, 'in', filename,
-            '-S', server, '-d', database, '-U', user,  '-P', password,
-            '-c', '-t',  sep,  '-r', line_terminator
-            ] + code_page
+            'bcp', ('' if schema is None else schema + '.') + table,
+            'in', filename, '-S', engine.url.host, '-d', engine.url.database,
+            '-U', engine.url.username, '-P', engine.url.password,
+            '-c', '-t', sep, '-r', line_terminator
+            ]
 
-        # run the BCP command and capture the output
+        # the code page has to be specified under windows so we append the 
+        # arguments here. this isnt supported under unix so we add an empty list
+        bcp_cmd = bcp_cmd + code_page
+
+        # we're letting the subprocess module compile the command to handle the
+        # escaping of the switches
         completed_process = subprocess.run(
-            bcp_cmd, check=True, stdout=subprocess.PIPE
-            )
+            bcp_cmd, check=True, stdout=subprocess.PIPE)
             
+    # the delete=False prevents deltion of the temporary file, so we force it
     finally:
         if os.path.exists(filename):
             os.remove(filename)
 
-    # check how many rows have been copied
+    # there's a possibility not all rows are copied so we parse it from the 
+    # stdout...
     stdout = completed_process.stdout.decode(stdout_encoding)
     rows_copied = int(re.search(r'(\d+) rows copied', stdout).group(1))
 
-    # check all rows have been inserted
+    # ...and throw an error if it doesnt match the dataframe, so the caller can 
+    # rollback etc
     try:
         assert rows_copied == len(self)
     except AssertionError:
